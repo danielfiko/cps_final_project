@@ -1,0 +1,219 @@
+/* This is the PSM the Platform Specific Model */
+/*** This version contains a SIMULATED platform */
+/* This version has possibility to change the polling intervals for temperature */
+import "datatypes.thingml" from stl
+import "pim_messages.thingml"
+import "javatimer.thingml" 
+
+// PSM specific messages
+
+thing fragment PSM_Msg {
+	message initialize();
+}
+
+// We need a way to initialize the Tellstick etc
+// This defines the central kick-down concept. The maven_dep stuff refers to an installed Maven project
+thing ZstickManager includes PSM_Msg
+{ 	/* Ports may be defined here */
+	required port to_T1 {
+		sends initialize
+	}
+	
+	required port to_onoff1 {
+		sends initialize
+	}
+	
+	/* properties defined here */
+	
+	function initialize() do
+	// kick-down initialization
+
+		to_T1!initialize()
+		to_onoff1!initialize()
+		
+	end //initialize
+	
+	statechart ZstickBehavior init Init {
+		state Init {
+		on entry do 
+			initialize()
+		end }
+	}
+} //end of ZstickManager
+
+thing ThermometerSet includes GeneralMsg,TemperatureMsg, PSM_Msg, TimerClient {
+// TimerClient introduced 160310
+	required port provide_val {sends temperature}
+	required port show_values {sends temperature}
+	provided port require_val {receives add_thermometer, set_polling_interval}
+	provided port initial {receives initialize}
+	provided port get_values {receives temperature} // SIMULATION
+		
+	property thermometers:Integer[25] // Identifiers of the thermometers in the set
+	property thermotext:String[25] // corresponding explanatory text 
+	
+	// SIMULATION
+	property thermoval:Double[25] // values to report from the corresponding thermometer
+	
+	property last_thermo:Integer = 0 // number of thermometers in the set 
+	property i:Integer // runner index in list
+	property poll_intrvl:Integer = 10000 // polling interval in milliseconds, default is like hardcoded value from X2.sim
+	// property s:Sensor // runner Sensor (removed at SIMULATION)
+	property id_s:Long // temporary id value (to be used with kick-down)
+	property sensortype:Integer // temporary value for sensor type
+	property temp_s:Double // temporary temperature value
+	property found:Boolean // temporary - true when item found in loop
+	
+	statechart behaviorThermometerSet init Init {
+		state Init {
+			transition -> Idle
+			event temp: initial?initialize
+			action do
+				timer!timer_start(poll_intrvl) // starting the polling cycle
+			end
+		}
+		state Idle {
+			transition -> Idle
+			event timout:timer?timer_timeout // 160310
+			action do
+				i=0
+				while (i<last_thermo)do
+					id_s=thermometers[i]
+					temp_s=thermoval[i]	
+					// SIMULATION: if the temperature is outside reasonable range, do not return temperature. Simulates thermometer error
+					if (temp_s > -40 and temp_s < 50) do		
+						provide_val!temperature(id_s,thermotext[i],temp_s)
+						show_values!temperature(id_s,thermotext[i],temp_s)
+					end
+					i=i+1
+				end 
+				
+				timer!timer_start(poll_intrvl) // restarting the polling cycle
+			end
+			transition -> Idle
+			event pollintrvl:require_val?set_polling_interval
+			action do
+				poll_intrvl = pollintrvl.intrvl
+			end
+			transition -> Idle
+			event addt:require_val?add_thermometer
+			action do				
+				id_s=addt.id
+				thermometers[last_thermo]=id_s
+				thermotext[last_thermo]=addt.txt
+				thermoval[last_thermo]= 0 // just a default temperature
+				last_thermo = last_thermo+1
+			end
+			// SIMULATION receiving temperature from simulation interface
+			transition -> Idle
+			event put_temp:get_values?temperature
+			action do
+				id_s=put_temp.id
+				
+				i=0
+				found = false
+				while (i<last_thermo and (not found)) do
+					if (id_s==thermometers[i]) do
+						found=true // trick to terminate while loop
+					end
+					i=i+1
+				end
+				if (found) do
+					thermoval[i-1]=put_temp.t	
+				end
+			end
+		}
+	}
+} // ThermometerSet
+
+
+
+thing OnOffSet includes PSM_Msg, OnOffMsg{
+	provided port require_val {receives SwitchOn, SwitchOff, add_device, StateQuery}
+	provided port initial {receives initialize}
+	required port show_val {sends SwitchOn, SwitchOff}
+	provided port recv_state {receives SwitchStateOn, SwitchStateOff}
+	required port send_state {sends SwitchStateOn, SwitchStateOff}
+	
+	property onoffswitches:Integer[25] // Identifiers of the onoffswitches in the set
+	property last_onoff:Integer = 0 // number of onoff switches in the set 
+	
+	// SIMULATION
+	property poweron:Boolean[25] // SIMULATION false=OFF true=ON for corresponding switches
+	
+	property i:Integer // runner index in list
+	property did:Integer // temporary device id
+	// property d:Device // temporary device removed at SIMULATION
+	property found:Boolean // temporary boolean used in while loop
+	
+	statechart behaviorOnOffSet init Init {
+		state Init {
+			transition -> Idle
+			event initial: initial?initialize
+		}
+		state Idle {
+			transition -> Idle
+			event add_dev: require_val?add_device
+			action do
+				did=add_dev.did
+				
+				onoffswitches[last_onoff]=did
+				last_onoff = last_onoff+1
+			end
+			transition -> Idle
+			event swon: require_val?SwitchOn
+			action do
+				did=swon.did
+				i=0
+				found = false
+				while (i<last_onoff and (not found)) do
+					if (did==onoffswitches[i]) do
+						found=true // trick to terminate while loop
+					end
+					i=i+1
+				end
+				if (found) do
+					poweron[i-1]=true // ON by SIMULATION
+					show_val!SwitchOn(did)
+					send_state!SwitchStateOn(did)
+				end
+			end
+			transition -> Idle
+			event swoff: require_val?SwitchOff
+			action do
+				did=swoff.did
+				i=0
+				found = false
+				while (i<last_onoff and (not found)) do
+					if (did==onoffswitches[i]) do
+						found=true // trick to terminate while loop
+					end
+					i=i+1
+				end
+				if (found) do
+					poweron[i-1]=false // OFF by SIMULATION
+					show_val!SwitchOff(did)
+					send_state!SwitchStateOff(did)
+				end
+			end
+		}
+	}
+}
+
+//SIMULATION
+thing TempSim includes TemperatureMsg 
+@mock "true"
+{ 	required port give_values {
+		sends temperature
+	}
+	provided port show_values {
+		receives temperature
+	}
+}
+
+
+thing OnOffSim includes OnOffMsg 
+@mock "true"
+{	provided port show_onoff {receives SwitchOn, SwitchOff}
+}
+
